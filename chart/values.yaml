@@ -1,0 +1,365 @@
+# Copyright 2023-2026 The MathWorks, Inc.
+
+# configurable parameters for web apps cluster
+
+global:
+  # MathWorks Cloud Reference Architecture License, example: "yes" (in quotes)
+  agreeToLicense: ""
+
+
+  # Network License Manager: server host and port number, example: 27000@hostname
+  # See https://github.com/mathworks-ref-arch/license-manager-for-matlab-on-azure-linux for example
+  # do not put as empty value, since it will be translated as "<nil>" which will cause server start failure
+  licenseServer: ""
+
+# Docker image names
+images:
+  serverName: matlab-web-app-server
+  serverTag: # default is "internal.serverRelease"
+  # release for server, like R2026b, if different from cluster software release
+  serverRelease: 
+
+  workerName: mw-webapps-worker-k8s
+  workerTag: # default is "internal.serverRelease"  
+
+  # Name of Kubernetes secret holding credentials for pulling images.
+  pullSecretName: 
+
+ingressController:
+
+  # type of ingress controller. Can be azure-application-gateway, nginx or none (empty)
+  # note that NGINX Ingress is retiring
+  class: 
+
+  # Ingress fully-qualified domain name (FQDN)
+  # should represent a site as browsers will be accessing this cluster
+  # can be fetched via "hostname -f" 
+  hostName: 
+
+  # custom name for TLS (https) secret resource
+  tlsSecretName: webapps-secret
+
+  # Defines the context root for the server.  Defaults to '/', may require additional
+  # Ingress support if context root is changed.
+  path: "/"
+
+  # Some custom settings required for AWS ALB support.
+  alb:
+
+    # Public listener port, defaults to HTTPS standard.
+    publicListenPort: 443
+
+    # ARN of the credentials to use for TLS from the Certificate Manager.
+    tlsCertificateArn: ""
+
+    # Duration for the "stick session" used to map sessions to specific server instances.  Default 1 hour.
+    stickySessionTTL: 3600
+
+    # When set, joins this Ingress to a shared ALB via the AWS Load Balancer
+    # Controller IngressGroup feature. All Ingresses with the same groupName
+    # consolidate onto a single ALB. Leave empty for a dedicated ALB per Ingress.
+    groupName: ""
+
+    # Optional priority within the ALB IngressGroup (integer). Lower numbers
+    # evaluate first. Only used when groupName is set.
+    groupOrder: ""
+
+
+webAppServerSettings:
+
+  # specify websites from which the web app that is embedded in an iframe HTML element can receive data
+  # like "https://localhost:8000"
+  allowedEventOrigins:
+
+  # specify which websites are allowed to embed a web app within an iFrame HTML element by listing 
+  # the allowed URLs separated by spaces. For example: "http://url1 http://url2"
+  allowedFrameAncestors: 
+
+  appSession:
+    # specify whether app sessions start in full-screen mode. Set to 1 to turn ON full screen mode
+    # Default is OFF
+    fullScreen: 
+    # specify whether to show app session footer and logs to specific users. Users can be specified as: all, authors, none
+    showFooter: 
+
+  # content security policy directives
+  contentSecurityPolicy:
+    # connect-src: "http://somesite.com"
+
+  # one of verbose, normal, minimal
+  loggingLevel: normal
+
+  # maximum size of all log files in megabytes (MB) in the log directory (if logging to file, per server pod)
+  logArchiveMaxSizeMB: 50
+  
+  # maximum size of a log file in megabytes (MB) before it rolls over into another file (if logging to file)
+  logRotationSizeMB: 10
+
+  # maximum sessions per server instance (pod)
+  # recommended: 4 sessions per CPU; minimum: 16 sessions per CPU; 
+  maxSessionsPerServer: 64
+
+  # CTF upload: maximum app size in MB (default: 100)
+  maxAppUploadSizeMB: 
+
+  metrics:
+    export:
+      # Specify how to export server metrics. The options are “off | debug | otlp”
+      #  off    - turn off exporting metrics.
+      #  debug  - export metrics to console
+      #  otlp   - export metrics to OTLP collector, specify HTTP endpoint in "destination"
+      type: "off"
+      # HTTP endpoint for type = otlp
+      destination:
+  
+  # time in seconds to wait before new session start failure will be issued
+  newSessionTimeout: 60
+
+  # how many server instances to be there
+  numServerPods: 1
+
+  # specify whether server can start without initializing license manager (bool), default is false
+  startNoLMInit: 
+
+  # one of [console, file]
+  # if console, server logs are accessible via "kubectl logs"
+  # if file, server logs will be stored as files in the logs volume 
+  serverLogsDest: console
+
+  # Session timeout, in minutes. If session stops communicating to server after this period it will get terminated
+  sessionTimeoutMinutes: 5
+
+  # password that protects secrets hosted by the server
+  vaultPassword: 
+
+  # folder containing secrets hosted by the server
+  vaultStoragePath:
+
+  # worker logs will be generated in worker dir for mentioned sources
+  workerDiagnosticSpec: 
+
+# define which runtimes to be used and how many sessions per runtime
+# Note only runtimes starting from 25a will work
+matlabRuntimes:
+  - # Number of prewarmed sessions to keep around per runtime
+    numPrewarmedWorkers: 2
+    # MATLAB Runtime release label. Need to match the name of the directory where MATLAB Runtime is installed (if using NFS or hostpath). 
+    release: R2026b
+    # custom tag to be used with embedded image
+    embeddedImageTag:
+  # - # Number of prewarmed sessions to keep around per runtime
+  #   numPrewarmedWorkers: 1
+  #   # name of the runtime subdirectory in the runtimes dir 
+  #   release: R2026b
+
+resourceQuota: 
+  webapps-server: # "app" pod label 
+    limits:
+      memory: "1024Mi"
+      cpu: "750m"
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+  webapps-worker-r2026b:
+    limits:
+      memory: "2048Mi"
+      cpu: "900m"
+    requests:
+      memory: "1024Mi"
+      cpu: "250m"
+
+security:
+    # see profiles in chart/security
+  appArmor:
+    # name of localhost profile, like "matlabWebAppsServerAppArmor"
+    serverProfile: 
+    # name of localhost profile, like "matlabWebAppsWorkerAppArmor" 
+    workerProfile: 
+
+  secComp:
+    # name of localhost profile file under /var/lib/kubelet/seccomp, like "matlab-seccomp-profile.json"
+    serverProfile: # matlab-seccomp-profile.json
+    # name of localhost profile file under /var/lib/kubelet/seccomp, like "matlab-seccomp-profile.json"
+    workerProfile: # matlab-seccomp-profile.json
+
+  networkPolicy:
+  
+    server:
+      enabled: true # secure by default
+      # Appends to the default list of ports in the defaultServerNetworkPolicy
+      # For example,
+      #   additionalAllowedPorts:
+      #  # allow MySQL access on standard port
+      #  - port: 3306
+      #    protocol: TCP
+      #  - port: 3306
+      #    protocol: UDP
+      additionalAllowedPorts: []
+      # Appends to the egress of the defaultServerNetworkPolicy
+      # For example,
+      # additionalEgress:
+      #   - to:
+      #     - podSelector:
+      #         matchLabels:
+      #           name: mayapplication
+      #           app: myapp
+      additionalEgress: []
+      # uses this value instead of the egress in defaultServerNetworkPolicy
+      egress: []
+
+    workers:
+      enabled: true # secure by default
+      # Appends to the default list of ports in the defaultWorkerNetworkPolicy
+      # For example,
+      #   additionalAllowedPorts:
+      #  # allow MySQL access on standard port
+      #  - port: 3306
+      #    protocol: TCP
+      #  - port: 3306
+      #    protocol: UDP
+      additionalAllowedPorts: []
+      # Appends to the egress of the defaultWorkerNetworkPolicy
+      # For example,
+      # additionalEgress:
+      #   - to:
+      #     - podSelector:
+      #         matchLabels:
+      #           name: mayapplication
+      #           app: myapp
+      additionalEgress: []
+      # uses this value instead of the egress in defaultWorkerNetworkPolicy
+      egress: []
+
+# Persistent volumes are defined here for webapps cluster
+volumes:
+  server: 
+    # server code mountType options: hostpath, nfs, embedded
+    # if embedded, assuming server code is a part of docker image in /webapps/server directory
+    mountType: embedded
+    # =================================================================
+    # hostpath: installed location of the server on the node, like /mnt/share/matlab_web_app_server/R2026b
+    hostpath: 
+    # =================================================================
+    # nfs: NFS server, example: fileserver01
+    server: 
+    # nfs: NFS subpath, example: /webappserver
+    path: 
+
+  runtimes: # all available runtimes should come from the same location
+    # mountType options: hostpath, nfs, embedded
+    mountType: embedded
+    # =================================================================
+    # hostpath: installed location of runtimes on the node, like /mnt/share/matlab_runtime
+    hostpath: 
+    # =================================================================
+    # nfs: NFS server, example: fileserver01
+    server: 
+    # nfs: NFS subpath, example: /matlab-runtimes
+    path: 
+ 
+  init: # special shared volume where both server and workers should have access to
+    # server needs write access, worker needs read
+
+    # mountType options: hostpath, nfs, pvc, azurefileshare
+    mountType: hostpath
+    # default size requirement
+    size: 100Mi
+    # =================================================================
+    # hostpath: node mount dir, example: /mnt/share/init
+    hostpath: 
+    # =================================================================
+    # nfs: NFS server, example: fileserver01
+    server:
+    # nfs: NFS subpath, example: /init
+    path:
+    # pvc: name of the claim
+    claimName: 
+    # =================================================================
+    # azurefileshare: Azure storage account file share name, example: init-share
+    shareName: 
+    # azurefileshare: Azure storage account key secret name, example: azure-file-secret
+    secretName:
+    # =================================================================
+    
+  apps: # Server needs read access, write access if app upload is used.
+    # default size requirement
+    size: 100Mi
+    # mountType options: hostpath, nfs, pvc, azurefileshare
+    mountType: hostpath
+    # =================================================================
+    # hostpath: node mount dir, example: /mnt/share/apps
+    hostpath: 
+    # =================================================================
+    # NFS server, example: fileserver01
+    server: 
+    # NFS subpath, example: /apps
+    path: 
+    # pvc: name of the claim
+    claimName: 
+    # =================================================================
+    # azurefileshare: Azure storage account file share name, example: apps-share
+    shareName: 
+    # azurefileshare: Azure storage account key secret name, example: azure-file-secret
+    secretName: 
+    # =================================================================
+    # for file upload feature, should not be readonly
+    readOnly: no
+
+  logs: # Shared volume for logs written by servers and workers.
+    # default size requirement
+    size: 100Mi
+    # mountType options: hostpath, nfs, pvc, azurefileshare, none
+    mountType: none
+    # =================================================================
+    # hostpath: node mount dir, example: /mnt/share/logs
+    hostpath: 
+    # =================================================================
+    # NFS server, example: fileserver01
+    server: 
+    # NFS subpath, example: /logs
+    path: 
+    # pvc: name of the claim
+    claimName: 
+    # =================================================================
+    # azurefileshare: Azure storage account file share name, example: apps-share
+    shareName: 
+    # azurefileshare: Azure storage account key secret name, example: azure-file-secret
+    secretName: 
+    # =================================================================
+
+# internal variables - do not override
+internal:
+  # for reaching server pods inside cluster
+  webappsServiceName: webapps-server-service
+  # for reaching server pods inside cluster
+  webappsServicePort: 9999
+  # for local requests
+  webappsServerLocalPort: 27185
+  # for traffic to workers 
+  webappsWorkerPort: 31515
+  # inside pod
+  webappsServerMainPort: 9988
+  # low-privileged account id 
+  webappsServerUserId: 1462
+  # low-privileged account id
+  webappsWorkerUserId: 1461
+  # release of a webapps server cluster
+  serverRelease: R2026b
+
+  # Default network policy
+  # Do not use for overriding. Use networkPolicy configuration instead
+  defaultWorkerNetworkPolicy:
+    egress:
+
+  # Default network policy
+  # Do not use for overriding. Use networkPolicy configuration instead
+  defaultServerNetworkPolicy:
+    egress:
+      - to:
+        ports:
+        # allow access to the FlexLM server ports
+        # See https://www.mathworks.com/matlabcentral/answers/96756-what-ports-does-the-network-license-manager-use-and-how-can-i-set-those-ports
+        # on where to find these ports
+        - port: 27000
+          endPort: 27010
+          protocol: TCP

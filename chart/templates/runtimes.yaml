@@ -1,0 +1,174 @@
+# Copyright 2024-2026 The MathWorks, Inc.
+# workers implementation
+
+{{- range .Values.matlabRuntimes }}
+
+apiVersion: apps/v1
+# Has to be Deployment and not StatefulSet, since scaling in response to 
+# label change in StatefulSet does not create new pods
+kind: Deployment
+metadata:
+  name: {{ include "webapps.workerSetName" .release }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ include "webapps.workerSetName" .release }}
+      state: idle
+  replicas: {{ .numPrewarmedWorkers }}
+  template:
+    metadata:
+      namespace: {{ $.Release.Namespace }}
+      labels:
+        app: {{ include "webapps.workerSetName" .release }}
+        state: idle # will be changed to "running" once pod gets engaged
+    spec:
+      securityContext:
+{{- if $.Values.security.appArmor.workerProfile }}
+        appArmorProfile:
+          type: Localhost
+          localhostProfile: {{ $.Values.security.appArmor.workerProfile }}
+{{ end }}
+{{- if $.Values.security.secComp.workerProfile }}
+        seccompProfile:
+          type: Localhost
+          localhostProfile: {{ $.Values.security.secComp.workerProfile }}
+{{ end }}
+      containers:
+      - name: {{ include "webapps.workerSetName" .release }}
+        {{- if ne $.Values.volumes.runtimes.mountType "embedded" }}
+        image: {{ include "webapps.workerImage" $ }}
+        {{ else }}      
+        image: {{ include "webapps.workerImageName" $ }}-{{ .release | lower }}:{{default (include "webapps.workerImageTag" $) .embeddedImageTag }}
+        {{ end }}
+        # diagnostic call
+        # command: ["/bin/bash", "-c", "--"]
+        # args: ["while true; do sleep 30; done;"]
+        # prepare deployed worker and launch it. 
+        command:
+        - /webapps/init/tools/init.sh
+        env:
+        # may be worth reading from webapps.config
+        - name: MDWAS_LOGGING_LEVEL
+          value: {{ $.Values.webAppServerSettings.loggingLevel }}
+        - name: DISPLAY
+          value: ":1"
+        - name: MATLAB_RELEASE
+          value: {{ .release }}
+        - name: AGREE_TO_MATHWORKS_SOFTWARE_LICENSE
+          value: {{ required "agreeToLicense must be set to \"yes\"." $.Values.global.agreeToLicense | default "no" | lower | quote }}
+        - name: AGREE_TO_MATLAB_RUNTIME_LICENSE
+          value: {{ required "agreeToLicense must be set to \"yes\"." $.Values.global.agreeToLicense | default "no" | lower | quote }}
+        # - name: RUNTIME_VER
+        #   value: {{ include "webapps.workerRuntimeVer" (dict "global" $ "item" .release) }}
+        - name: SERVER_URL
+          # this has to be a url to a service since it will have to round robin servers
+          value: {{ include "webapps.serverServiceAddress" $}}/webapps/commands
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: MW_WEBAPPS_WORKER_UID
+          value: "{{ $.Values.internal.webappsWorkerUserId }}"
+        ports:
+        - containerPort: {{ $.Values.internal.webappsWorkerPort }}
+          name: worker-port
+        # if needed limits can be applied  
+        resources:
+          {{- $appName := include "webapps.workerSetName" .release -}}
+          {{- toYaml ( index $.Values.resourceQuota $appName ) | nindent 10 }}
+        volumeMounts:
+        {{- if ne $.Values.volumes.runtimes.mountType "embedded" }}
+        - name: webapps-runtime
+          mountPath: /matlab
+          subPath: {{ .release }}
+          readOnly: true
+        {{- end }}
+{{- if ne $.Values.volumes.logs.mountType "none" }}        
+        - name: webapps-logs
+          mountPath: /webapps/logs
+{{- end }}
+        - name: webapps-init # runtime sessions init data and tools
+          mountPath: /webapps/init 
+          # permissions should be set on volume to reduce unauthorized access
+        - name: webapps-cert
+          mountPath: /webapps/crt/external.pem
+          subPath: "webapps_cert.pem"
+          readOnly: true
+        startupProbe: # delay liveness checks until this succeeds
+          tcpSocket:
+            port: worker-port
+          periodSeconds: 5
+          failureThreshold: 60 # 5 min is unreasonable to start worker
+        livenessProbe:
+          exec:
+            command:
+            - /webapps/scripts/alive.sh
+          failureThreshold: 2
+          periodSeconds: 60
+          timeoutSeconds: 5
+      imagePullSecrets:
+      {{- if $.Values.images.pullSecretName }}
+      - name: {{ $.Values.images.pullSecretName }}
+      {{- end }}
+      volumes:
+        {{- if ne $.Values.volumes.runtimes.mountType "embedded" }}
+        - name: webapps-runtime
+          persistentVolumeClaim:
+            claimName: webapps-runtime-pvc
+            readOnly: true
+        {{- end }}
+{{- if ne $.Values.volumes.logs.mountType "none" }}
+        - name: webapps-logs
+          persistentVolumeClaim:
+{{- if eq $.Values.volumes.logs.mountType "pvc" }}
+            claimName: {{ required "PVC claimName is required for volume \"webapps-logs\"" ($.Values.volumes.logs.claimName | trim) }}
+{{- else }}            
+            claimName: webapps-logs-pvc
+{{- end }}
+{{- end }} # none
+        - name: webapps-init
+          persistentVolumeClaim:
+{{- if eq $.Values.volumes.init.mountType "pvc" }}
+            claimName: {{ required "PVC claimName is required for volume \"webapps-init\"" ($.Values.volumes.init.claimName | trim) }}
+{{- else }}
+            claimName: webapps-init-pvc
+{{- end }}            
+            # cannot set it to readonly here, since it may cause whole pv to become readonly
+            # if it loads faster than server pod
+        - name: webapps-cert
+          configMap:
+            name: webapps-config-private
+---
+# structure to terminate pods with state=terminated
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: terminated-{{ include "webapps.workerSetName" .release }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ include "webapps.workerSetName" .release }}
+      state: terminated
+  replicas: 0
+  template:
+    metadata:
+      namespace: {{ $.Release.Namespace }}
+      labels:
+        app: {{ include "webapps.workerSetName" .release }}
+        state: terminated 
+    spec:
+      containers:
+      - name: {{ include "webapps.workerSetName" .release }}
+        {{- if ne $.Values.volumes.runtimes.mountType "embedded" }}
+        image: {{ include "webapps.workerImage" $ }}
+        {{ else }}      
+        image: {{ include "webapps.workerImageName" $ }}-{{ .release | lower }}:{{default (include "webapps.workerImageTag" $) .embeddedImageTag }}
+        {{ end }}
+---
+{{- end }}

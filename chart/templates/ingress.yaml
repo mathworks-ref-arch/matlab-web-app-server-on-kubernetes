@@ -1,0 +1,139 @@
+# Copyright 2022-2026 The MathWorks, Inc.
+
+{{- if .Values.ingressController.class }}
+{{- $pathSetting := .Values.ingressController.path | default "/" }}
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: webapps-ingress
+  namespace: {{ .Release.Namespace }}
+  annotations:
+{{- if or (eq .Values.ingressController.class "nginx") (eq .Values.ingressController.class "webapprouting.kubernetes.azure.com") }}  
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: MDWAS-K8S-SESSION
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    # not putting expiration - should create session cookie
+    nginx.ingress.kubernetes.io/session-cookie-change-on-failure: "true" # send to another one on failure
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    # should be more than webAppServerSettings.newSessionTimeout
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "{{ add .Values.webAppServerSettings.newSessionTimeout 2 }}"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "{{ add .Values.webAppServerSettings.newSessionTimeout 2 }}"
+    nginx.ingress.kubernetes.io/proxy-body-size: "{{ include "webapps.maxAppUploadSizeStr" . }}"
+
+{{- if not (eq $pathSetting "/" ) }}
+    # Enable context root support by rewriting the URL path
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/proxy-redirect-from: "/webapps"
+    nginx.ingress.kubernetes.io/proxy-redirect-to: "{{ .Values.ingressController.path }}/webapps"
+{{- end }}
+{{- else if eq .Values.ingressController.class "azure-application-gateway" }}
+    appgw.ingress.kubernetes.io/backend-protocol: https
+    # Annotations required for 'azure-application-gateway'
+    # This must match the value of 'class', above.
+    #kubernetes.io/ingress.class: azure-application-gateway
+    #appgw.ingress.kubernetes.io/cookie-based-affinity: "true"
+    #appgw.ingress.kubernetes.io/hostname-extension: donotdeletewask8sdc8a38.eastus.cloudapp.azure.com
+    #appgw.ingress.kubernetes.io/appgw-ssl-certificate: wask8stlscert
+    #appgw.ingress.kubernetes.io/appgw-trusted-root-certificate: wask8stlsca
+    
+    # Annnotation required to bind Azure Ingress to TLS credentials for termination.
+    #kubernetes.azure.com/tls-cert-keyvault-uri: https://wask8skvf85146.vault.azure.net/certificates/was-k8s-test-ingress-cert/8a23fa8cfe244b1ca7912b3b47390f62
+{{- else if eq .Values.ingressController.class "alb" }}
+    # Annotations for ALB Ingress Controller
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": {{ .Values.ingressController.alb.publicListenPort | default 443 }} }]'
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingressController.alb.tlsCertificateArn | default "" | quote }}
+    alb.ingress.kubernetes.io/ssl-redirect: {{ .Values.ingressController.alb.publicListenPort | default 443 | quote }}
+    alb.ingress.kubernetes.io/healthcheck-path: /webapps/home/
+    alb.ingress.kubernetes.io/backend-protocol: HTTPS
+    alb.ingress.kubernetes.io/auth-session-cookie: MDWAS-K8S-SESSION
+    alb.ingress.kubernetes.io/target-group-attributes: stickiness.enabled=true,stickiness.lb_cookie.duration_seconds={{ .Values.ingressController.alb.stickySessionTTL | default 3600 }},stickiness.type=lb_cookie
+{{- if .Values.ingressController.alb.groupName }}
+    alb.ingress.kubernetes.io/group.name: {{ .Values.ingressController.alb.groupName | quote }}
+{{- end }}
+{{- if .Values.ingressController.alb.groupOrder }}
+    alb.ingress.kubernetes.io/group.order: {{ .Values.ingressController.alb.groupOrder | quote }}
+{{- end }}
+{{- else }}
+
+{{- end }}
+spec:
+  ingressClassName: {{ .Values.ingressController.class }}
+{{- if ne .Values.ingressController.class "alb" }}
+  tls:
+  - hosts:
+      - {{ required "ingressController.hostName value was not provided." .Values.ingressController.hostName | default "" | quote }}
+    secretName: {{ .Values.ingressController.tlsSecretName }}
+{{- end }}
+  rules:
+  - host: {{ required "ingressController.hostName value was not provided." .Values.ingressController.hostName | default "" | quote }}
+    http:
+      paths:
+      - pathType: ImplementationSpecific
+{{- if not (eq $pathSetting "/" ) }}
+        path: "{{ $pathSetting }}(/|$)(.*)"
+{{- else }}
+        path: {{ $pathSetting | quote }}
+{{- end }}
+        backend:
+          service:
+            name: {{ .Values.internal.webappsServiceName }} 
+            port:
+              number: {{ .Values.internal.webappsServicePort }}
+
+{{- if eq .Values.ingressController.class "alb" }}
+      - pathType: Prefix
+        path: "{{ $pathSetting }}webapps/"
+        backend:
+          service:
+            name: {{ .Values.internal.webappsServiceName }} 
+            port:
+              number: {{ .Values.internal.webappsServicePort }}
+      - pathType: Prefix
+        path: "{{ $pathSetting }}services/"
+        backend:
+          service:
+            name: {{ .Values.internal.webappsServiceName }} 
+            port:
+              number: {{ .Values.internal.webappsServicePort }}
+      - pathType: Prefix
+        path: "{{ $pathSetting }}messageservice/"
+        backend:
+          service:
+            name: {{ .Values.internal.webappsServiceName }} 
+            port:
+              number: {{ .Values.internal.webappsServicePort }}
+      - pathType: Prefix
+        path: "{{ $pathSetting }}serviceregistrylookup/"
+        backend:
+          service:
+            name: {{ .Values.internal.webappsServiceName }} 
+            port:
+              number: {{ .Values.internal.webappsServicePort }}
+      - pathType: Prefix
+        path: "{{ $pathSetting }}toolbox/"
+        backend:
+          service:
+            name: {{ .Values.internal.webappsServiceName }} 
+            port:
+              number: {{ .Values.internal.webappsServicePort }}
+      - pathType: Prefix
+        path: "{{ $pathSetting }}ui/"
+        backend:
+          service:
+            name: {{ .Values.internal.webappsServiceName }} 
+            port:
+              number: {{ .Values.internal.webappsServicePort }}
+      - pathType: Prefix
+        path: "{{ $pathSetting }}download/"
+        backend:
+          service:
+            name: {{ .Values.internal.webappsServiceName }} 
+            port:
+              number: {{ .Values.internal.webappsServicePort }}
+{{- end }}
+{{- end }}

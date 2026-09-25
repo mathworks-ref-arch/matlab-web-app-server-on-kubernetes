@@ -1,0 +1,172 @@
+# Copyright 2022-2026 The MathWorks, Inc.
+
+# Description of a network policy:
+
+# Server pod:
+# ingress:
+# - allow connections on port 9988 - all
+# - allow connections on port 27185 - worker pods only
+# egress:
+# - to worker pods - for handshake (31515)
+# - to server pods - for worker release (27185)
+# - to external auth (443)
+# - to licensing server
+# - to OTLP server
+# - to DNS server
+# - FlexLM server
+
+{{- if .Values.security.networkPolicy.server.enabled }}
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: webapps-server-network-policy
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels: # all the server pods
+      app: webapps-server
+  policyTypes:
+    - Ingress
+    - Egress    
+  ingress:
+# allow connections on port 9988 - all
+    - from:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: {{ .Values.internal.webappsServerMainPort }}
+
+# allow connections on port 27185 - worker pods only
+    - from:
+      - podSelector:
+          matchExpressions:
+          - key: app
+            operator: In
+            values:
+{{- range .Values.matlabRuntimes }}
+            - {{ include "webapps.workerSetName" .release }}
+{{- end }}
+            - webapps-server
+      ports:
+      - protocol: TCP
+        port: {{ .Values.internal.webappsServerLocalPort }}
+
+  egress:
+    - to:
+# - to worker pods - for handshake (31515)
+      - podSelector:
+          matchExpressions:
+          - key: app
+            operator: In
+            values:
+{{- range .Values.matlabRuntimes }}
+            - {{ include "webapps.workerSetName" .release }}
+{{- end }}
+      ports:
+      - protocol: TCP
+        port: {{ .Values.internal.webappsWorkerPort }}
+
+# to server pods - for worker release (27185)
+    - to:
+      - podSelector:
+          matchLabels:
+            app: webapps-server
+      ports:
+      - protocol: TCP
+        port: {{ .Values.internal.webappsServerLocalPort }}
+
+    - to: # to external auth (443), k8s API (6443), DNS (53) and LDAP (389)
+      ports:
+      - protocol: TCP
+        port: 443
+      - protocol: TCP
+        port: 6443
+        # DNS
+      - protocol: TCP
+        port: 53
+      - protocol: UDP
+        port: 53
+      # LDAP  
+      - protocol: TCP
+        port: 389        
+
+{{ include "webapps.appendToEgress" (dict 
+    "policy" .Values.security.networkPolicy.server 
+    "defaultPolicy" .Values.internal.defaultServerNetworkPolicy) }}
+
+{{- end }}  
+---
+
+# Worker pod:
+# ingress:
+# - port 31515 - server pod only;
+# egress:
+# - port 9999 - to anywhere
+# - port 9988 - to server pod only
+# - port 27185 - to server pod only
+# - DNS (port 53) - to anywhere
+
+{{- if .Values.security.networkPolicy.workers.enabled }}
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: webapps-worker-network-policy
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+{{- range .Values.matlabRuntimes }}
+      - {{ include "webapps.workerSetName" .release }}
+{{- end }}
+
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+# - port 31515 - server pod only;
+    - from:
+      - podSelector:
+          matchLabels:
+            app: webapps-server
+      ports:
+      - protocol: TCP
+        port: {{ .Values.internal.webappsWorkerPort }}
+
+  egress:
+# - port 9999 - to anywhere
+    - to:
+      ports:
+      - protocol: TCP
+        port: {{ .Values.internal.webappsServicePort }}
+
+# - port 9988 - to server pod only
+# - port 27185 - to server pod only
+    - to:
+      - podSelector:
+          matchLabels:
+            app: webapps-server
+      ports:
+      - protocol: TCP
+        port: {{ .Values.internal.webappsServerMainPort }}
+      - protocol: TCP
+        port: {{ .Values.internal.webappsServerLocalPort }}
+
+    - to: # DNS (53)
+      ports:
+      - protocol: TCP
+        port: 53
+      - protocol: UDP
+        port: 53
+
+{{ include "webapps.appendToEgress" (dict 
+    "policy" .Values.security.networkPolicy.workers 
+    "defaultPolicy" .Values.internal.defaultWorkerNetworkPolicy) }}
+
+{{- end }}    
+---  

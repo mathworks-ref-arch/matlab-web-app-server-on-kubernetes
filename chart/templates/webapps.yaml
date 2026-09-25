@@ -1,0 +1,339 @@
+# Copyright 2022-2026 The MathWorks, Inc.
+
+# This YAML file defines webapps cluster
+
+# Both server and worker pods will share runtime as external persistent read-only volume
+# Server and worker pods can be on different nodes
+
+# Apps will reside on another persistent volume, which server can (optionally) write into
+# Workers will have CTF copied into a pod from apps PV
+# Logs will reside on another PV where server and worker pods can write to
+# logs will be grouped per server (folder), so that all worker (session) logs that belong to a server will 
+# be in the same location
+
+# Each worker is tied to specific runtime version
+# So you need to be explicit how many workers you want to have of each runtime ver
+
+# all workers will share same network, but will not be able to communicate to each other due to SSL
+# cert differences 
+
+# TODO iptables configuration (only to host over specific port)
+# TODO HTTP and HTTPS versions
+
+# kind: Namespace
+# apiVersion: v1
+# metadata:
+#   name: mw-webapps
+# ---
+# Allow changing label of a pod from inside of a pod
+# to enable scaling in response to the load
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: patch-pods-role
+  namespace: {{ .Release.Namespace }}
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: read-pod-logs
+  namespace: {{ .Release.Namespace }}
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: webapps-server-service-account
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patch-pods-role-binding
+  namespace: {{ .Release.Namespace }}
+subjects:
+- kind: ServiceAccount
+  name: webapps-server-service-account
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: patch-pods-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: read-pod-logs-binding
+  namespace: {{ .Release.Namespace }}
+subjects:
+- kind: ServiceAccount
+  name: webapps-server-service-account
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: read-pod-logs
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.internal.webappsServiceName }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  ports:
+  - port: {{ .Values.internal.webappsServicePort }}
+    name: service-port
+    targetPort: main-port
+  clusterIP: "" # allocate automatically
+  # Cannot do ClientIP, because we want requests from same user to reach different servers
+  # to allow them to start more sessions
+  # at the same time, if session was started, it should be handled by the same server
+  # maybe nginx ingress can take care of it?
+  # sessionAffinity: ClientIP
+  selector: # finding pods by this label
+    app: webapps-server
+---
+# server implementation
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: webapps
+  namespace: {{ .Release.Namespace }}
+spec:
+  serviceName: {{ .Values.internal.webappsServiceName }}
+  replicas: {{ .Values.webAppServerSettings.numServerPods }}
+  selector:
+    matchLabels:
+      app: webapps-server
+  template:
+    metadata:
+      namespace: {{ .Release.Namespace }}
+      labels:
+        app: webapps-server
+      annotations: 
+        # force restart when server configuration changes
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: webapps-server-service-account
+      securityContext:
+{{- if $.Values.security.appArmor.serverProfile }}
+        appArmorProfile:
+          type: Localhost
+          localhostProfile: {{ $.Values.security.appArmor.serverProfile }}
+{{ end }}
+{{- if $.Values.security.secComp.serverProfile }}
+        seccompProfile:
+          type: Localhost
+          localhostProfile: {{ $.Values.security.secComp.serverProfile }}
+{{ end }}
+      containers:
+      - name: webapps-server
+        image: {{ include "webapps.serverImage" . }}
+        # imagePullPolicy: Always
+        # resources:
+        #   limits:
+        #     memory: "1024Mi"
+        #     cpu: "500m"
+        # for debugging, you can replace webapps call with sleep
+        # command: ["/bin/bash", "-c", "--"]
+        # args: ["while true; do sleep 30; done;"]
+        command: 
+        - /webapps/server/bin/glnxa64/webapps
+        args: 
+        - -c
+        - /webapps/config/webapps.config
+        - --serverLogsDest
+{{- if and 
+      (eq .Values.volumes.logs.mountType "none")
+      (eq .Values.webAppServerSettings.serverLogsDest "file") -}}
+{{- required "Logs volume needs to be mounted for serverLogsDest=file" .Values.none -}}
+{{ end }}
+        - {{ .Values.webAppServerSettings.serverLogsDest }}
+        env:
+        - name: AGREE_TO_MATHWORKS_SOFTWARE_LICENSE
+          value: {{ required "agreeToLicense must be set to \"yes\"." .Values.global.agreeToLicense | default "no" | lower | quote }}
+        - name: AGREE_TO_MATLAB_RUNTIME_LICENSE
+          value: {{ required "agreeToLicense must be set to \"yes\"." .Values.global.agreeToLicense | default "no" | lower | quote }}
+        # enable this env var for worker logs to be generated in worker dir
+        - name: MDWAS_WORKER_DIAGNOSTIC_SPEC
+          value: {{ .Values.webAppServerSettings.workerDiagnosticSpec | quote }}
+        # uncomment for worker performance logging 
+        # - name: MDWAS_WORKER_PERF_LOGGING
+        #   value: "1"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+        - containerPort: {{ .Values.internal.webappsServerMainPort }}
+          name: main-port
+        - containerPort: {{ .Values.internal.webappsServerLocalPort }}
+          name: local-port
+        startupProbe:
+          tcpSocket:
+            port: main-port
+          failureThreshold: 36 # 3 min
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /webapps/home/
+            port: main-port
+            scheme: HTTPS
+          failureThreshold: 2
+          periodSeconds: 60
+        readinessProbe:
+          httpGet:
+            path: /webapps/ready
+            port: main-port
+            scheme: HTTPS
+          periodSeconds: 15
+        resources:
+          {{- toYaml ( index .Values.resourceQuota "webapps-server" ) | nindent 12 }}
+        volumeMounts:
+        {{- if ne .Values.volumes.runtimes.mountType "embedded" }}
+        - name: webapps-runtime
+          mountPath: /webapps/runtimes
+          readOnly: true
+        {{- else }}
+        - name: runtime-data
+          mountPath: /webapps/runtimes/embedded
+        {{- end }}
+        {{- if ne .Values.volumes.server.mountType "embedded" }}
+        - name: webapps-server
+          mountPath: /webapps/server
+          readOnly: true
+        {{- end }}
+        - name: webapps-apps
+          mountPath: /webapps/apps
+{{- if ne .Values.volumes.logs.mountType "none" }}
+        - name: webapps-logs
+          mountPath: /webapps/logs
+{{- end }}
+        - name: webapps-init
+          mountPath: /webapps/init
+        - name: webapps-config
+          mountPath: /webapps/config
+          readOnly: true
+        - name: webapps-config-private
+          mountPath: /webapps/config/webapps_private
+          readOnly: true
+        - name: webapps-license
+          mountPath: {{ include "webapps.serverLicenseMountPath" . }}
+          readOnly: true
+# to enable debugging
+#        securityContext:
+#          capabilities:
+#            add: [ "SYS_PTRACE" ]
+      initContainers:
+
+      - name: webapps-server-init
+        image: {{ include "webapps.serverImage" . }}
+        volumeMounts:
+        {{- if ne .Values.volumes.server.mountType "embedded" }}
+        - name: webapps-server
+          mountPath: /webapps/server
+          readOnly: true
+        {{- end }}
+        - name: webapps-init
+          mountPath: "/webapps/init"
+        command:
+        - /webapps/scripts/init/copy_init_tools.sh
+        args:
+        - /webapps/scripts/init
+        - /webapps/init/tools
+
+{{- if eq .Values.volumes.runtimes.mountType "embedded" }}
+{{- range .Values.matlabRuntimes }}
+
+      - name: matlab-runtime-{{ .release | lower }}
+        image: {{ include "webapps.workerImageName" $ }}-{{ .release | lower }}:{{ default (include "webapps.workerImageTag" $) .embeddedImageTag }}
+        command:
+        - /webapps/init/tools/import_embedded_runtime.sh 
+        args:
+        - /opt/matlabruntime/{{ .release }} 
+        - /mnt/shared/{{ .release }}
+        volumeMounts:
+        - name: runtime-data
+          mountPath: "/mnt/shared"
+        - name: webapps-init
+          mountPath: "/webapps/init"
+
+{{- end }}
+{{- end }} 
+
+      imagePullSecrets:
+      {{- if .Values.images.pullSecretName }}
+      - name: {{ .Values.images.pullSecretName }}
+      {{- end }}
+
+      volumes:
+        {{- if ne .Values.volumes.runtimes.mountType "embedded" }}
+        - name: webapps-runtime
+          persistentVolumeClaim:
+            claimName: webapps-runtime-pvc
+            readOnly: true
+        {{- else }}
+
+        - name: runtime-data
+          emptyDir: {}
+        {{- end }}
+        {{- if ne .Values.volumes.server.mountType "embedded" }}
+        - name: webapps-server
+          {{- if eq .Values.volumes.server.mountType "hostpath" }}
+          hostPath:
+            path: {{ .Values.volumes.server.hostpath }}
+            type: Directory
+          {{- else if eq .Values.volumes.server.mountType "nfs" }}
+          nfs:
+            server: {{ .Values.volumes.server.server }}
+            path: {{ .Values.volumes.server.path }}
+            readOnly: true
+          {{- end }}
+        {{- end }}
+
+        - name: webapps-apps
+          persistentVolumeClaim:
+{{- if eq .Values.volumes.apps.mountType "pvc" }}
+            claimName: {{ required "PVC claimName is required for volume \"webapps-apps\"" .Values.volumes.apps.claimName }}
+{{- else }}
+            claimName: webapps-apps-pvc
+{{- end }}
+
+{{- if ne .Values.volumes.logs.mountType "none" }}
+        - name: webapps-logs
+          persistentVolumeClaim:
+{{- if eq .Values.volumes.logs.mountType "pvc" }}
+            claimName: {{ required "PVC claimName is required for volume \"webapps-logs\"" .Values.volumes.logs.claimName }}
+{{- else }}
+            claimName: webapps-logs-pvc
+{{- end }}
+{{- end }}
+
+        - name: webapps-init
+          persistentVolumeClaim:
+{{- if eq .Values.volumes.init.mountType "pvc" }}
+            claimName: {{ required "PVC claimName is required for volume \"webapps-init\"" .Values.volumes.init.claimName }}
+{{- else }}
+            claimName: webapps-init-pvc
+{{- end }}
+
+        - name: webapps-config
+          configMap:
+            name: webapps-config
+        - name: webapps-config-private
+          configMap:
+            name: webapps-config-private
+        - name: webapps-license
+          configMap:
+            name: webapps-license
+            optional: true
+            items:
+            - key: license.dat
+              path: license.lic

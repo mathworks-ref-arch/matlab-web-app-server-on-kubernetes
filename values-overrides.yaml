@@ -1,0 +1,37 @@
+# Copyright 2023-2026 The MathWorks, Inc.
+
+# User-editable configuration entries
+# for more values and their meanings, see values.yaml
+
+global:
+  # MathWorks Cloud Reference Architecture License, example: "yes" (in quotes)
+  agreeToLicense: ""
+
+  # Network License Manager: server host and port number, example: 27000@hostname
+  # port@hostname of license manager service
+  # do not put as empty value, since it will be translated as "<nil>" which will cause server start failure
+  licenseServer: ""
+
+ingressController:
+  # type of ingress controller. Can be azure-application-gateway, nginx or none (empty)
+  # note that NGINX Ingress is retiring  
+  class: 
+
+  # Ingress fully-qualified domain name (FQDN)
+  # should represent a site as browsers will be accessing this cluster
+  # can be fetched via "hostname -f" 
+  hostName: 
+
+# volume customizations
+volumes:
+  # special shared volume where both server and workers should have access to
+  init: 
+    # mount options: hostpath, nfs, azurefileshare
+    mountType: "hostpath"
+    hostpath: 
+    
+  # Both server and workers need read access, server needs write access if app upload is used.
+  apps: 
+    # mount options: hostpath, nfs, azurefileshare
+    mountType: "hostpath"
+    hostpath: 

@@ -1,0 +1,234 @@
+# Copyright 2022-2026 The MathWorks, Inc.
+
+{{- if ne .Values.volumes.apps.mountType "pvc" }}
+# apps volume. Has to be writeable for uploads to be supported
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: webapps-apps-{{ .Release.Namespace }}
+# PVs are not namespaced
+  labels: # needed so K8s will map to correct volume
+    app: webapps-apps-{{ .Release.Namespace }}
+spec:
+  storageClassName: ""
+  capacity:
+    storage: {{ .Values.volumes.apps.size }}
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  {{- if eq .Values.volumes.apps.mountType "hostpath" }}
+  hostPath:
+    path: {{ .Values.volumes.apps.hostpath }}
+    type: Directory
+  {{- else if eq .Values.volumes.apps.mountType "nfs" }}
+  nfs:
+    server: {{ .Values.volumes.apps.server }}
+    path: {{ .Values.volumes.apps.path }}
+    readOnly: {{ .Values.volumes.apps.readOnly }}
+  {{- else if eq .Values.volumes.apps.mountType "azurefileshare" }}
+  azureFile:
+    shareName: {{ .Values.volumes.apps.shareName }}
+    secretName: {{ .Values.volumes.apps.secretName }}
+    readOnly: {{ .Values.volumes.apps.readOnly }}
+  mountOptions:
+  - dir_mode=0770 # dir permissions
+  - file_mode=0770 # file permissions
+  - uid={{ .Values.internal.webappsServerUserId }}
+  - gid=0 # group that owns files on this volume
+  - mfsymlinks
+  - nobrl
+  - serverino
+  {{- end }}
+---  
+{{- end }}
+
+{{- if ne .Values.volumes.init.mountType "pvc" }}
+# data volume. Has to be writeable by a server and worker processes
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: webapps-init-{{ .Release.Namespace }}
+# PVs are not namespaced
+  labels: # needed so K8s will map to correct volume
+    app: webapps-init-{{ .Release.Namespace }}
+spec:
+  storageClassName: ""
+  capacity:
+    storage: {{ .Values.volumes.init.size }}
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  {{- if eq .Values.volumes.init.mountType "hostpath" }}
+  hostPath:
+    path: {{ .Values.volumes.init.hostpath }}
+    type: Directory
+  {{- else if eq .Values.volumes.init.mountType "nfs" }}
+  nfs:
+    server: {{ .Values.volumes.init.server }}
+    path: {{ .Values.volumes.init.path }}
+    readOnly: false
+  {{- else if eq .Values.volumes.init.mountType "azurefileshare" }}
+  azureFile:
+  # azureFile is deprecated
+    shareName: {{ .Values.volumes.init.shareName }}
+    secretName: {{ .Values.volumes.init.secretName }}
+    readOnly: false
+  mountOptions:
+  - dir_mode=0771
+  - file_mode=0775
+  - uid={{ .Values.internal.webappsServerUserId }}
+  - gid=0
+  - mfsymlinks
+  - nobrl
+  - serverino
+  # TODO move to csi since azureFile is deprecated
+  # csi:
+  #   driver: file.csi.azure.com
+  #   volumeHandle: {{ .Values.volumes.init.storageAccount }}#{{ .Values.volumes.init.shareName }}
+  #   readOnly: false
+  #   volumeAttributes:
+  #     secretName: {{ .Values.volumes.init.secretName }}
+  #     shareName: {{ .Values.volumes.init.shareName }}
+  {{- end }}
+---  
+{{- end }}
+
+{{- if and (ne .Values.volumes.logs.mountType "pvc") (ne .Values.volumes.logs.mountType "none") }}
+# logs volume. Has to be writeable by a server process, unless server is writing to console
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: webapps-logs-{{ .Release.Namespace }}
+# PVs are not namespaced
+  labels: # needed so K8s will map to correct volume
+    app: webapps-logs-{{ .Release.Namespace }}
+spec:
+  storageClassName: ""
+  capacity:
+    storage: {{ .Values.volumes.logs.size }}
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  {{- if eq .Values.volumes.logs.mountType "hostpath" }}
+  hostPath:
+    path: {{ .Values.volumes.logs.hostpath }}
+    type: Directory
+  {{- else if eq .Values.volumes.logs.mountType "nfs" }}
+  nfs:
+    server: {{ .Values.volumes.logs.server }}
+    path: {{ .Values.volumes.logs.path }}
+    readOnly: false
+  {{- else if eq .Values.volumes.logs.mountType "azurefileshare" }}
+  azureFile:
+    shareName: {{ .Values.volumes.logs.shareName }}
+    secretName: {{ .Values.volumes.logs.secretName }}
+    readOnly: false
+  mountOptions:
+  - dir_mode=0773
+  - file_mode=0773
+  - uid={{ .Values.internal.webappsServerUserId }}
+  - gid=0
+  - mfsymlinks
+  - nobrl
+  - serverino
+  {{- end }}
+---
+{{- end }}
+
+{{- if ne .Values.volumes.runtimes.mountType "embedded" }}
+# runtime volume (readonly)
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: webapps-runtime-{{ .Release.Namespace }}
+# PVs are not namespaced
+spec:
+  storageClassName: "" # need to be empty to prevent dynamic volumes
+  capacity:
+    storage: 10Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadOnlyMany
+  {{- if eq .Values.volumes.runtimes.mountType "hostpath" }}
+  hostPath:
+    path: {{ .Values.volumes.runtimes.hostpath }}
+    type: Directory
+  {{- else if eq .Values.volumes.runtimes.mountType "nfs" }}
+  nfs:
+    server: {{ .Values.volumes.runtimes.server }}
+    path: {{ .Values.volumes.runtimes.path }}
+    readOnly: true
+  {{- end }}
+---
+# claims are needed to access volumes shared between objects
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: webapps-runtime-pvc
+  namespace: {{ .Release.Namespace }}
+spec:
+  storageClassName: ""
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 10Gi
+---
+{{- end }}
+
+{{- if ne .Values.volumes.apps.mountType "pvc" }}
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: webapps-apps-pvc
+  namespace: {{ .Release.Namespace }}
+spec:
+  storageClassName: ""
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: {{ .Values.volumes.apps.size }}
+  selector: 
+    matchLabels:
+      app: webapps-apps-{{ .Release.Namespace }}
+---      
+{{- end }}
+
+{{- if ne .Values.volumes.init.mountType "pvc" }}
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: webapps-init-pvc
+  namespace: {{ .Release.Namespace }}
+spec:
+  storageClassName: ""
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: {{ .Values.volumes.init.size }}
+  selector: 
+    matchLabels:
+      app: webapps-init-{{ .Release.Namespace }}
+---      
+{{- end }}      
+
+{{- if and (ne .Values.volumes.logs.mountType "pvc") (ne .Values.volumes.logs.mountType "none") }}
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: webapps-logs-pvc
+  namespace: {{ .Release.Namespace }}
+spec:
+  storageClassName: ""
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: {{ .Values.volumes.logs.size }}
+  selector: 
+    matchLabels: # make sure volume is correct
+      app: webapps-logs-{{ .Release.Namespace }}
+---      
+{{- end }}      

@@ -1,0 +1,33 @@
+# Copyright 2024-2025 The MathWorks, Inc.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webapps-config
+  namespace: {{ .Release.Namespace }}
+data:
+  webapps.config: |
+{{ tpl (.Files.Get "settings/webapps.config") . | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webapps-config-private
+  namespace: {{ .Release.Namespace }}
+data:
+{{ tpl (.Files.Glob "settings/webapps_private/*").AsConfig . | indent 2 }}
+---
+# similar to
+# kubectl create secret tls webapps-secret --key $MYDIR/../config/webapps_private/webapps_key.pem \
+# --cert $MYDIR/../config/webapps_private/webapps_cert.pem -n $NAMESPACE
+apiVersion: v1
+kind: Secret
+metadata:
+  name: webapps-secret
+  namespace: {{ .Release.Namespace }}
+type: kubernetes.io/tls
+stringData:
+  tls.crt: |
+{{ .Files.Get "settings/webapps_private/webapps_cert.pem" | indent 4 }}
+  tls.key: |
+{{ .Files.Get "settings/webapps_private/webapps_key.pem" | indent 4 }}
+
